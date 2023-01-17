@@ -1,0 +1,26 @@
+* {
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    background: #efeeea;
+}
+
+.truncate {
+    flex: 1;  
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+@font-face {
+    font-family: backcountry;
+    src: url(./assets/fonts/BACKCOUNTRY-Regular.ttf);
+  }
+
+.invalid {
+    border: "red solid 2px"
+}
