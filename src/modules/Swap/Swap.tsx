@@ -23,14 +23,15 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { CoinAvatar } from '@components/CoinAvatar/CoinAvatar';
 import LogoWrapper from '@components/LogoWrapper/LogoWrapper';
-import coins, { CoinInput } from '@utils/coins';
+import coins, { CoinInput, CoinInputWithServices, CoinInput_Serializable } from '@utils/coins';
 import { IConnector } from '@connect2ic/core';
-import { getProviders, ycWicpSwapCanisterId, wicpCanisterId } from '@utils/icUtils';
+import { getProviders, ycWicpSwapCanisterId, wicpCanisterId, mlpSwapCanisterId } from '@utils/icUtils';
 import { AccountIdentifier, SubAccount } from '@dfinity/nns';
 import { Principal } from '@dfinity/principal';
 import { bigIntToDecimal, bigIntToDecimalPrettyString, DECIMALS } from '@utils/decimalutils';
 import LoadingButton from '@mui/lab/LoadingButton';
 import Loading from '@components/Loading/Loading';
+import { _SERVICE as Dip20Service, idlFactory as dip20Factory } from "../../declarations/dip20/dip20.did";
 import ImportExportIcon from '@mui/icons-material/ImportExport';
 import ImportExportRoundedIcon from '@mui/icons-material/ImportExportRounded';
 import { getMlpAmmMetaData, getYcWicpAmmMetaData, priceOfIcp } from '@utils/httputils';
@@ -42,7 +43,7 @@ import { theme } from '@misc/theme';
 import { _SERVICE as SwapService } from 'src/declarations/swap/swap.did';
 import { ArrowDropDown } from '@mui/icons-material';
 import NavBar from '@components/NavBar/NavBar';
-import IcUtils, {updateICPBalance} from '@utils/icUtils';
+import IcUtils, {updateICPBalance, } from '@utils/icUtils';
 import { YC_CONTRACT } from 'src/declarations/yourcoin/yourcoin.did';
 
 interface IAlert {
@@ -76,8 +77,10 @@ export default function Swap({provider}: any) {
 	const [swapValue1, setSwapValue1] = useState<string | undefined | number>('0');
 	const [swapValue2, setSwapValue2] = useState<string | undefined | number>('0');
 	const [wicpFailed, setWicpFailed] = useState<boolean>(false);
+	const [swapServices, setSwapServices] = useState<Map<string, {canisterId: string, swapService: SwapService}>>(new Map());
+	const [tokenServices, setTokenServices] = useState<Map<string, {canisterId?: string, service?: Dip20Service}>>(new Map());
 	const [appLoading, setAppLoading] = useState(true);
-	const [swapCoinList, setSwapCoinList] = useState(coins.coinList);
+	const [swapCoinList, setSwapCoinList] = useState(new Map());
 	const [swap1Loading, setSwap1Loading] = useState(false);
 	const [swap2Loading, setSwap2Loading] = useState(false);
 	const [disableForm, setDisableForm] = useState(false);
@@ -109,45 +112,6 @@ export default function Swap({provider}: any) {
 			calcMarketcap().then();
 		});
 	}, []);
-
-	const populateCoinObjects = async (
-		newToken1: CoinInput, 
-		newToken2: CoinInput,
-		swapService: SwapService, 
-		existingToken1?: CoinInput, 
-		existingToken2?: CoinInput
-	) => {
-		if (existingToken1 && existingToken2) {
-			existingToken1.tradingPair.push(existingToken2);
-			existingToken2.tradingPair.push(existingToken1);
-		} else if (existingToken1 && !existingToken2) {
-			newToken2.tradingPair.push(existingToken1);
-			existingToken1.tradingPair.push(newToken2);
-			existingToken1.service = (await icUtils.wicpCanister(icpProvider)) as any;
-			if(!existingToken1.swapServices) existingToken1.swapServices = new Map();
-			if(!newToken2.swapServices) newToken2.swapServices = new Map();
-			existingToken1.swapServices.set(newToken2.symbol, swapService);
-			newToken2.swapServices.set(existingToken1.symbol, swapService);
-			swapCoinList.push(newToken2);
-			setSwapCoinList(swapCoinList);
-		} else if (!existingToken1 && existingToken2) {
-			newToken1.tradingPair.push(existingToken2);
-			existingToken2.tradingPair.push(newToken1);
-			existingToken2.service = (await icUtils.wicpCanister(icpProvider)) as any;
-			if(!existingToken2.swapServices) existingToken2.swapServices = new Map();
-			if(!newToken1.swapServices) newToken1.swapServices = new Map();
-			existingToken2.swapServices.set(newToken1.symbol, swapService);
-			newToken1.swapServices.set(existingToken2.symbol, swapService);
-			swapCoinList.push(newToken1);
-			setSwapCoinList(swapCoinList);
-		} else if (!existingToken1 && !existingToken2) {
-			newToken1.tradingPair.push(newToken2);
-			newToken2.tradingPair.push(newToken1);
-			swapCoinList.push(newToken2);
-			swapCoinList.push(newToken1);
-			setSwapCoinList(swapCoinList);
-		}
-	};
 	
 	async function updateWICPBalance(icpProvider: IConnector, balanceMap: Map<string, string>) {
 		const wICP = await icUtils.wicpCanister(icpProvider);
@@ -161,12 +125,21 @@ export default function Swap({provider}: any) {
 		const metadata = await dip20.getMetadata();
 		const balance = await dip20.balanceOf(Principal.fromText(icpProvider.principal ?? ''));
 		const swapServices = new Map();
+		const swapCanisterIds = new Map();
 		let swapService;
+		let swapServiceCanisterId;
 		if(metadata.symbol === "YC" || metadata.symbol === "WICP") {
 			swapService = await icUtils.ycWicpSwapCanister(icpProvider);
+			swapServiceCanisterId = ycWicpSwapCanisterId;
 		};
-		if(metadata.symbol === "YC") swapServices.set("WICP", swapService);
-		if(metadata.symbol === "WICP") swapServices.set("YC", swapService);
+		if(metadata.symbol === "YC") {
+			swapCanisterIds.set("WICP",swapServiceCanisterId);
+			swapServices.set("WICP", swapService);
+		};
+		if(metadata.symbol === "WICP") {
+			swapCanisterIds.set("YC",swapServiceCanisterId);
+			swapServices.set("YC", swapService);
+		}
 		balanceMap.set(metadata.symbol, bigIntToDecimalPrettyString(balance));
 		
 		return {
@@ -175,6 +148,7 @@ export default function Swap({provider}: any) {
 			tradingPair: [],
 			service: dip20,
 			swapServices,
+			swapCanisterIds,
 			canisterId: dip20CanisterId
 		};
 	}
@@ -207,10 +181,18 @@ export default function Swap({provider}: any) {
 		}
 
 		let balanceMap = new Map<string, string>();
-		if (icpProvider && icpProvider.principal) {
+		if (icpProvider.principal) {
+
+			//Adding default Coins to the swapCoinList map;
+			coins.coinList.forEach((coin: CoinInput) => {
+				const {symbol} = coin;
+				swapCoinList.set(symbol, coin);
+			});
+			
+			//gathering async requests to be called simultaneously;
 			const coinRequests: any = [
 				getPriceOfYc(), 
-				updateICPBalance(icpProvider, balanceMap,setIcpBalance, icUtils), 
+				updateICPBalance(icpProvider, balanceMap, setIcpBalance, icUtils), 
 				updateWICPBalance(icpProvider, balanceMap)];
 
 			const dips_yc_wicp = await getYcWicpAmmMetaData();
@@ -225,27 +207,82 @@ export default function Swap({provider}: any) {
 
 			const response = await Promise.allSettled<any>(coinRequests);
 			setCoinBalanceMap(balanceMap);
-			
-			const token1Promise = response[3] as any;
-			const token2Promise = response[4] as any;
-			const newToken1: CoinInput = token1Promise.value;
-			const newToken2: CoinInput = token2Promise.value;
-			const existingToken1 = swapCoinList.find(x => x.symbol === newToken1.symbol);
-			const existingToken2 = swapCoinList.find(x => x.symbol === newToken2.symbol);
-			const ycWicpSwapCanister = await icUtils.ycWicpSwapCanister(icpProvider);
-			await populateCoinObjects(newToken1, newToken2, ycWicpSwapCanister, existingToken1, existingToken2);
-			
-			const token3Promise = response[5] as any;
-			const token4Promise = response[6] as any;
-			const newToken3: CoinInput = token3Promise.value;
-			const newToken4: CoinInput = token4Promise.value;
-			const existingToken3 = swapCoinList.find(x => x.symbol === newToken3.symbol);
-			const existingToken4 = swapCoinList.find(x => x.symbol === newToken4.symbol);
-			const ycMlpSwapCanister = await icUtils.ycMlpTokenSwapCanister(icpProvider);
-			await populateCoinObjects(newToken4, newToken3, ycMlpSwapCanister, existingToken4, existingToken3);
-			console.log([...swapCoinList]);
+
+			//populating swapCoinsList and tradingPairs Maps
+			for(let i = 3; i < response.length; i+=2){
+				let token1Promise: any = response[i];
+				let token2Promise: any = response[i+1];
+				let newToken1: CoinInputWithServices = token1Promise.value;
+				let newToken2: CoinInputWithServices = token2Promise.value;
+				let traidngPairKey = `${newToken1.symbol}-${newToken2.symbol}`;
+				traidngPairKey = traidngPairKey.toUpperCase();
+				let existingCoin1: CoinInput = swapCoinList.get(newToken1.symbol);
+				let existingCoin2: CoinInput = swapCoinList.get(newToken2.symbol);
+				//populating tokenServices map
+				if(newToken1.canisterId){
+					const serviceObj = tokenServices.get(newToken1.symbol.toUpperCase());
+					if(serviceObj)tokenServices.set(newToken1.symbol.toUpperCase(), {...serviceObj, canisterId: newToken1.canisterId})
+					else tokenServices.set(newToken1.symbol.toUpperCase(), {canisterId: newToken1.canisterId});
+				}
+				if(newToken1.service){
+					const serviceObj = tokenServices.get(newToken1.symbol.toUpperCase());
+					if(serviceObj) tokenServices.set(newToken1.symbol.toUpperCase(), {...serviceObj, service: newToken1.service});
+					else tokenServices.set(newToken1.symbol.toUpperCase(), {service: newToken1.service});
+				}
+				if(newToken2.canisterId){
+					const serviceObj = tokenServices.get(newToken2.symbol.toUpperCase());
+					if(serviceObj) tokenServices.set(newToken2.symbol.toUpperCase(), { ...serviceObj, canisterId: newToken2.canisterId});
+					else tokenServices.set(newToken2.symbol.toUpperCase(), {canisterId: newToken2.canisterId});
+				}
+				if(newToken2.service){
+					const serviceObj = tokenServices.get(newToken2.symbol.toUpperCase());
+					if(serviceObj) tokenServices.set(newToken2.symbol.toUpperCase(), {...serviceObj, service: newToken2.service});
+					else tokenServices.set(newToken2.symbol.toUpperCase(), {service: newToken2.service});
+				}
+				//populating SwapCoinList map
+				if(existingCoin1) {
+					const tradingPairIsAlreadyPresent = existingCoin1.tradingPair.find(pair => pair === traidngPairKey);
+					if(!tradingPairIsAlreadyPresent) existingCoin1.tradingPair.push(newToken2.symbol.toLocaleUpperCase());
+				} else {
+					newToken1.tradingPair.push(newToken2.symbol.toLocaleUpperCase());
+					const newToken_1 : CoinInput = {
+						name: newToken1.name,
+						symbol: newToken1.symbol,
+						tradingPair: newToken1.tradingPair,
+						canisterId: newToken1.canisterId,
+						swapCanisterIds: newToken1.swapCanisterIds
+					};
+					swapCoinList.set(newToken1.symbol.toUpperCase(), newToken_1);
+				}
+				if(existingCoin2) {
+					const tradingPairIsAlreadyPresent = existingCoin2.tradingPair.find(pair => pair === traidngPairKey);
+					if(!tradingPairIsAlreadyPresent) existingCoin2.tradingPair.push(newToken1.symbol.toLocaleUpperCase());
+				} else {
+					newToken2.tradingPair.push(newToken1.symbol.toLocaleUpperCase());
+					const newToken_2 : CoinInput = {
+						name: newToken2.name,
+						symbol: newToken2.symbol,
+						tradingPair: newToken2.tradingPair,
+						canisterId: newToken2.canisterId,
+						swapCanisterIds: newToken2.swapCanisterIds
+					};
+					swapCoinList.set(newToken2.symbol.toUpperCase(), newToken_2);
+				};
+				//Populating swapServices map
+				if(traidngPairKey === "YC-WICP"){
+					const swapService = await icUtils.ycWicpSwapCanister(icpProvider);
+					const canisterId = ycWicpSwapCanisterId;
+					swapServices.set(traidngPairKey,{ swapService, canisterId});
+				} else if(traidngPairKey.toUpperCase() === `${coins.MLP.symbol}-YC`){
+					console.log(traidngPairKey.toUpperCase());
+					const swapService = await icUtils.ycMlpTokenSwapCanister(icpProvider);
+					const canisterId = mlpSwapCanisterId;
+					console.log(traidngPairKey);
+					swapServices.set(traidngPairKey,{ swapService, canisterId});
+				};
+			};
 		}
-	}
+	};
 
 	async function transferICPToWICP(amount: bigint) {
 		if (icpProvider && icpProvider.principal) {
@@ -349,9 +386,10 @@ export default function Swap({provider}: any) {
 	}
 
 	function onChangeSwap1(symbol: string) {
-		const selected = coins.coinList.find(x => x.symbol === symbol) as CoinInput;
-		setSelectedCoin1(selected);
-		setSelectedCoin2(selected.tradingPair[0]);
+		const selected_1 = swapCoinList.get(symbol.toUpperCase());
+		const selected_2 = swapCoinList.get(selected_1.tradingPair[0]);
+		setSelectedCoin1(selected_1);
+		setSelectedCoin2(selected_2);
 		resetSwap();
 	}
 
@@ -366,7 +404,9 @@ export default function Swap({provider}: any) {
 	}
 
 	function onChangeSwap2(symbol: string) {
-		setSelectedCoin2(coins.coinList.find(x => x.symbol === symbol) as CoinInput);
+		const selected = swapCoinList.get(symbol.toUpperCase());
+		setSelectedCoin2(selected);
+		resetSwap();
 	}
 
 	const debounceEqualizedSwap1 = useRef(debounce((val, selectedCoin1, selectedCoin2) => equalizePrice('swap1', val, selectedCoin1, selectedCoin2), 500));
@@ -423,16 +463,42 @@ export default function Swap({provider}: any) {
 		return regExp.test(str);
 	}
 
-	function equalizePrice(swapChanged: string, price: string, selectedCoin1: CoinInput, selectedCoin2: CoinInput) {
+	async function equalizePrice(swapChanged: string, price: string, selectedCoin1: CoinInput, selectedCoin2: CoinInput) {
+        const tradingKey1 = `${selectedCoin1.symbol.toUpperCase()}-${selectedCoin2.symbol.toUpperCase()}`;
+        const tradingKey2 = `${selectedCoin2.symbol.toUpperCase()}-${selectedCoin1.symbol.toUpperCase()}`;
+        let token1: {token: CoinInput, selectionOrder: number};
+        let token2: {token: CoinInput, selectionOrder: number};
+        let swapServiceObj = swapServices.get(tradingKey1);
+        if(swapServiceObj) {
+            token1 = {token: selectedCoin1, selectionOrder: 1};
+            token2 = {token: selectedCoin2, selectionOrder: 2};
+        } else if(swapServices.get(tradingKey2)){
+            swapServiceObj = swapServices.get(tradingKey2);
+            token1 = {token: selectedCoin2, selectionOrder: 2};
+            token2 = {token: selectedCoin1, selectionOrder: 1};
+        } else return;
+        let swapService = swapServiceObj?.swapService;
+        if(!swapService) return;
 		switch (swapChanged) {
 			case 'swap1': {
 				if (selectedCoin1.symbol.includes('ICP') && selectedCoin2.symbol.includes('ICP')) {
 					setSwapValue2(price.toString());
 				} else {
-					setDisableForm(true);
+                    setDisableForm(true);
 					setSwap2Loading(true);
-					equalizeCoinGivenCoin(price, selectedCoin1, selectedCoin2, setSwapValue2).then();
-				}
+                    const value = BigInt(parseFloat(price) * DECIMALS);
+                    let coin2EqualizedValue;
+                    if(token1.selectionOrder === 1){
+                        coin2EqualizedValue = await swapService.getEquivalentToken2Estimate(value);
+                    } else {
+						console.log(value);
+                        coin2EqualizedValue = await swapService.getEquivalentToken1Estimate(value);
+                        console.log('equalizedValue: ',coin2EqualizedValue);
+                    }
+                    if(!coin2EqualizedValue && coin2EqualizedValue !== BigInt(0)) return;
+                    coin2EqualizedValue = parseFloat(coin2EqualizedValue.toString()) / parseFloat(DECIMALS.toString());
+                    setSwapValue2(Number(coin2EqualizedValue.toString()));
+				};
 				break;
 			}
 			case 'swap2': {
@@ -441,24 +507,64 @@ export default function Swap({provider}: any) {
 				} else {
 					setDisableForm(true);
 					setSwap1Loading(true);
-					equalizeCoinGivenCoin(price, selectedCoin2, selectedCoin1, setSwapValue1).then();
+                    const value = BigInt(parseFloat(price) * DECIMALS)
+                    let coin1EqualizedValue;
+                    if(token1.selectionOrder === 2){
+                        coin1EqualizedValue = await swapService.getEquivalentToken2Estimate(value);
+                    } else {
+                        coin1EqualizedValue = await swapService.getEquivalentToken1Estimate(value);
+                    }
+                    if(!coin1EqualizedValue && coin1EqualizedValue !== BigInt(0)) return;
+                    coin1EqualizedValue = parseFloat(coin1EqualizedValue.toString()) / parseFloat(DECIMALS.toString());
+                    setSwapValue1(Number(coin1EqualizedValue.toString()));
 				}
 				break;
 			}
 		}
-	}
-
-	async function equalizeCoinGivenCoin(tokensOfcoin1: string, coinToTrade: CoinInput, coinToCompare: CoinInput, setSwapFunc: any) {
-		const response = (await Promise.allSettled<any>([
-			coinToTrade.service?.balanceOf(Principal.fromText(ycWicpSwapCanisterId)),
-			coinToCompare.service?.balanceOf(Principal.fromText(ycWicpSwapCanisterId))
-		])) as any;
-		const displayPrice = getSwapTokenEstimate(tokensOfcoin1, response[0].value, response[1].value);
-		setSwapFunc(bigIntToDecimal(displayPrice).getValue());
 		setSwap2Loading(false);
 		setSwap1Loading(false);
 		setDisableForm(false);
 	}
+
+	// function equalizePrice(swapChanged: string, price: string, selectedCoin1: CoinInput, selectedCoin2: CoinInput) {
+	// 	switch (swapChanged) {
+	// 		case 'swap1': {
+	// 			if (selectedCoin1.symbol.includes('ICP') && selectedCoin2.symbol.includes('ICP')) {
+	// 				setSwapValue2(price.toString());
+	// 			} else {
+	// 				setDisableForm(true);
+	// 				setSwap2Loading(true);
+	// 				equalizeCoinGivenCoin(price, selectedCoin1, selectedCoin2, setSwapValue2).then();
+	// 			}
+	// 			break;
+	// 		}
+	// 		case 'swap2': {
+	// 			if (selectedCoin1.symbol.includes('ICP') && selectedCoin2.symbol.includes('ICP')) {
+	// 				setSwapValue1(price.toString());
+	// 			} else {
+	// 				setDisableForm(true);
+	// 				setSwap1Loading(true);
+	// 				equalizeCoinGivenCoin(price, selectedCoin2, selectedCoin1, setSwapValue1).then();
+	// 			}
+	// 			break;
+	// 		}
+	// 	}
+	// }
+
+	// async function equalizeCoinGivenCoin(tokensOfcoin1: string, coinToTrade: CoinInput, coinToCompare: CoinInput, setSwapFunc: any) {
+	// 	const coinToTradeServiceObj = tokenServices.get(coinToTrade.symbol.toUpperCase());
+	// 	const coinToCompareServiceObj = tokenServices.get(coinToCompare.symbol.toUpperCase());
+	// 	if(!coinToTradeServiceObj || !coinToCompareServiceObj) return;
+	// 	const response = (await Promise.allSettled<any>([
+	// 		coinToTradeServiceObj.service?.balanceOf(Principal.fromText(ycWicpSwapCanisterId)),
+	// 		coinToCompareServiceObj.service?.balanceOf(Principal.fromText(ycWicpSwapCanisterId))
+	// 	])) as any;
+	// 	const displayPrice = getSwapTokenEstimate(tokensOfcoin1, response[0].value, response[1].value);
+	// 	setSwapFunc(bigIntToDecimal(displayPrice).getValue());
+	// 	setSwap2Loading(false);
+	// 	setSwap1Loading(false);
+	// 	setDisableForm(false);
+	// }
 	// populates TVL, Market, YC to ICP conversion and ICP to YC conversion
 	async function getPriceOfYc() {
 		const wicpContract = await icUtils.wicpCanister(icpProvider);
@@ -486,7 +592,6 @@ export default function Swap({provider}: any) {
 		let token2After = price / token1After;
 
 		var amountToken2 = totalToken2Balance - token2After;
-
 		return amountToken2;
 	}
 
@@ -518,33 +623,43 @@ export default function Swap({provider}: any) {
 			resetSwap();
 			setDisableForm(false);
 		};
-
+		if(!swapValue1) return;
 		if (selectedCoin1.symbol.includes('ICP') && selectedCoin2.symbol.includes('WICP')) {
-			transferICPToWICP(BigInt(Number(swapValue1) * DECIMALS)).then(finishSwap);
+			transferICPToWICP(BigInt(parseFloat(swapValue1.toString()) * DECIMALS)).then(finishSwap);
 		} else if (selectedCoin1.symbol.includes('WICP') && selectedCoin2.symbol.includes('ICP')) {
-			withdrawICP(BigInt(Number(swapValue1) * DECIMALS)).then(finishSwap);
+			withdrawICP(BigInt(parseFloat(swapValue1.toString()) * DECIMALS)).then(finishSwap);
 		} else {
-			if (swapValue1) swapToken(BigInt(Number(swapValue1?.toString()) * DECIMALS)).then(finishSwap);
+			if (swapValue1) swapToken(BigInt(parseFloat(swapValue1?.toString()) * DECIMALS)).then(finishSwap);
 		}
 	}
 
 	async function swapToken(amount: bigint) {
 		try {
 			const ammMetadata = await getYcWicpAmmMetaData();
-			const swapCanisterId = selectedCoin1.swapCanisterIds?.get(selectedCoin2.symbol);
-			await selectedCoin1.service?.approve(Principal.fromText(swapCanisterId || ""), amount);
+			const tradingPairKey1 = `${selectedCoin1.symbol.toUpperCase()}-${selectedCoin2.symbol.toUpperCase()}`;
+			const tradingPairKey2 = `${selectedCoin2.symbol.toUpperCase()}-${selectedCoin1.symbol.toUpperCase()}`;
+			let swapService = swapServices.get(tradingPairKey1);
+			if(!swapService) swapService = swapServices.get(tradingPairKey2);
+			if(!swapService) return;
+			const swapCanisterId = swapService.canisterId;
+			const selectedCoin1ServiceObj = tokenServices.get(selectedCoin1.symbol);
+			const selectedCoin2ServiceObj = tokenServices.get(selectedCoin2.symbol);
+			let swapServiceObj = swapServices.get(tradingPairKey1);
+			if(!swapServiceObj) swapServiceObj = swapServices.get(tradingPairKey2);
+			if(!swapServiceObj) throw('swapService not defined');
+			if(!selectedCoin1ServiceObj) throw('selectedCoin1ServiceObj not defined');
+			if(!selectedCoin2ServiceObj) throw('selectedCoin2ServiceObj not defined');
+			await selectedCoin1ServiceObj.service?.approve(Principal.fromText(swapCanisterId || ""), amount);
 			const swapValueDecimal2 = new bigDecimal(swapValue2).getValue().replace('.', '');
-
 			const slipCalced = calcSlippage(slippageValue.toString(), swapValueDecimal2);
-			const swapCanister = selectedCoin1.swapServices?.get(selectedCoin2.symbol);
+			const swapCanister = swapServiceObj.swapService;
 			if(!swapCanister){
 				throw("swap canister missing");
 			}
 			const doSwap = ammMetadata.token1 === selectedCoin1.canisterId ? await swapCanister.swapToken1(amount, BigInt(slipCalced)) : await swapCanister.swapToken2(amount, BigInt(slipCalced));
-
 			const prince = icpProvider.principal;
-			const coin1Balance = await selectedCoin1.service?.balanceOf(Principal.fromText(prince ?? ''));
-			const coin2Balance = await selectedCoin2.service?.balanceOf(Principal.fromText(prince ?? ''));
+			const coin1Balance = await selectedCoin1ServiceObj.service?.balanceOf(Principal.fromText(prince ?? ''));
+			const coin2Balance = await selectedCoin2ServiceObj.service?.balanceOf(Principal.fromText(prince ?? ''));
 			coinBalanceMap.set(selectedCoin1.symbol, bigIntToDecimalPrettyString(coin1Balance));
 			coinBalanceMap.set(selectedCoin2.symbol, bigIntToDecimalPrettyString(coin2Balance));
 			setCoinBalanceMap(coinBalanceMap);
@@ -578,6 +693,15 @@ export default function Swap({provider}: any) {
 		}, 6000);
 	}
 
+	const stripServicesFromTokenServices = (tokenServices: Map<any, any>) => {
+		const newTokenServices = new Map();
+		tokenServices.forEach((tokenServiceObj, key) => {
+			let newTokenServiceObj = {canisterId: tokenServiceObj.canisterId};
+			newTokenServices.set(key,newTokenServiceObj);
+		});
+		return newTokenServices;
+	};
+
 	function calcSlippage(partialValue: string, totalValue: string) {
 		const slippageVal = new bigDecimal(partialValue);
 		const swap2Val = bigIntToDecimal(totalValue);
@@ -593,6 +717,25 @@ export default function Swap({provider}: any) {
 		setSwapValue1(swapValue2);
 		setSwapValue2(swapValue1);
 		setSwitchToggled(!switchToggled);
+	};
+
+	const renderMenuItemsFromMap = (map: Map<any, any>) => {
+		const mapAsArray = Array.from(map.entries());
+		return (
+			mapAsArray.map(([key, value]) => (
+				<MenuItem
+					onClick={() => {
+						onChangeSwap1(value.symbol);
+						setSwap1AnchorEl(null);
+					}}
+					sx={{ display: 'flex', flexGrow: 1 }}
+					key={value.symbol}
+					value={value.symbol}>
+					<CoinAvatar coinType={value.symbol} />
+					<span>{value.name}</span>
+				</MenuItem>
+			))
+		);
 	}
 
 	function renderSwap() {
@@ -605,7 +748,20 @@ export default function Swap({provider}: any) {
 								<Button onClick={() => navigate('/')}>Disconnect</Button>
 							</Box>
 							<Box sx={{ display: 'flex', flexGrow: 1, justifyContent: 'right' }}>
-								<Button onClick={() => navigate('/liquidity', { replace: false, state: coinBalanceMap})}>Add Liquidity</Button>
+								<Button onClick={() => {
+									const tokenServices_serializable = stripServicesFromTokenServices(tokenServices);
+										navigate(
+											'/liquidity', 
+											{ 
+												replace: false, 
+												state: {
+													coinBalanceMap: coinBalanceMap, 
+													swapCoinList: swapCoinList,
+													tokenServices: tokenServices_serializable
+												} 
+											}
+										);
+									}}>Add Liquidity</Button>
 							</Box>
 						</Box>
 						<Box sx={{ display: 'flex', flexGrow: 1, flexDirection: "row" }}>
@@ -702,19 +858,7 @@ export default function Swap({provider}: any) {
 										vertical: 'top',
 										horizontal: 'right'
 									}}>
-									{swapCoinList.map(coin => (
-										<MenuItem
-											onClick={() => {
-												onChangeSwap1(coin.symbol);
-												setSwap1AnchorEl(null);
-											}}
-											sx={{ display: 'flex', flexGrow: 1 }}
-											key={coin.symbol}
-											value={coin.symbol}>
-											<CoinAvatar coinType={coin.symbol} />
-											<span>{coin.name}</span>
-										</MenuItem>
-									))}
+									{renderMenuItemsFromMap(swapCoinList)}
 								</Menu>
 							</Box>
 							<Box sx={{ display: 'flex', flexGrow: 1 }}>
@@ -784,19 +928,22 @@ export default function Swap({provider}: any) {
 										vertical: 'top',
 										horizontal: 'right'
 									}}>
-									{selectedCoin1.tradingPair.map(coin => (
-										<MenuItem
-											onClick={() => {
-												onChangeSwap2(coin.symbol);
-												setSwap2AnchorEl(null);
-											}}
-											sx={{ display: 'flex', flexGrow: 1 }}
-											key={coin.symbol}
-											value={coin.symbol}>
-											<CoinAvatar coinType={coin.symbol} />
-											<span>{coin.name}</span>
-										</MenuItem>
-									))}
+									{selectedCoin1.tradingPair.map(symbol => {
+										const coin = swapCoinList.get(symbol);
+										return(
+											<MenuItem
+												onClick={() => {
+													onChangeSwap2(coin.symbol);
+													setSwap2AnchorEl(null);
+												}}
+												sx={{ display: 'flex', flexGrow: 1 }}
+												key={coin.symbol}
+												value={coin.symbol}>
+												<CoinAvatar coinType={coin.symbol} />
+												<span>{coin.name}</span>
+											</MenuItem>
+										)
+									})}
 								</Menu>
 							</Box>
 							<Box sx={{ display: 'flex', flexGrow: 1 }}>

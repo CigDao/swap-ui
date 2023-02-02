@@ -13,3 +13,14 @@ export function bigIntToDecimal(big: BigInt | number | string) {
 export function bigIntToDecimalPrettyString(big: BigInt | number | undefined) {
     return big ? bigIntToDecimal(big).getPrettyValue(3, ",") : "0";
 }
+
+export function prettyStringToNumber(string: string){
+    let intString : string = '';
+    for(let i = 0; i < string.length; i++){
+        let char = string[i];
+        if(char === ",") continue;
+        intString += char;
+    };
+    if(intString === '') return Number(0);
+    return Number(intString);
+};
